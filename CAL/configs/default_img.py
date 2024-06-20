@@ -9,7 +9,7 @@ _C = CN()
 # -----------------------------------------------------------------------------
 _C.DATA = CN()
 # Root path for dataset directory
-_C.DATA.ROOT = '/home/guxinqian/data'
+_C.DATA.ROOT = '/data/CUI/briar/data_working/dawei.du/datasets'
 # Dataset for evaluation
 _C.DATA.DATASET = 'ltcc'
 # Workers for dataloader
@@ -120,7 +120,7 @@ _C.EVAL_MODE = False
 # GPU device ids for CUDA_VISIBLE_DEVICES
 _C.GPU = '0'
 # Path to output folder, overwritten by command line argument
-_C.OUTPUT = '/data/guxinqian/logs/'
+_C.OUTPUT = '/data/CUI/briar/data_working/krishna.regmi/cal/logs/'
 # Tag of experiment, overwritten by command line argument
 _C.TAG = 'res50-ce-cal'
 

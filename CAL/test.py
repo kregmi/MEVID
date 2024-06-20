@@ -8,7 +8,7 @@ from torch import distributed as dist
 from tools.eval_metrics import evaluate, evaluate_with_clothes, evaluate_with_locations, evaluate_with_scales
 import pdb
 
-VID_DATASET = ['ccvid']
+VID_DATASET = ['ccvid', 'briar', 'briar_test']
 
 
 def concat_all_gather(tensors, num_total_examples):
@@ -62,9 +62,9 @@ def extract_vid_feature(logger, model, dataloader, vid2clip_index, data_length):
         clip_clothes_ids = torch.cat((clip_clothes_ids, batch_clothes_ids.cpu()), dim=0)
     clip_features = torch.cat(clip_features, 0)
 
-    # Gather samples from different GPUs
-    clip_features, clip_pids, clip_camids, clip_clothes_ids = \
-        concat_all_gather([clip_features, clip_pids, clip_camids, clip_clothes_ids], data_length)
+    # # Gather samples from different GPUs
+    # clip_features, clip_pids, clip_camids, clip_clothes_ids = \
+    #     concat_all_gather([clip_features, clip_pids, clip_camids, clip_clothes_ids], data_length)
 
     # Use the averaged feature of all clips split from a video as the representation of this original full-length video
     features = torch.zeros(len(vid2clip_index), clip_features.size(1)).cuda()
@@ -82,21 +82,56 @@ def extract_vid_feature(logger, model, dataloader, vid2clip_index, data_length):
 
     return features, pids, camids, clothes_ids
 
+@torch.no_grad()
+def extract_vid_feature_updated(logger, model, dataloader, data_length):
+
+    clip_features, clip_pids, clip_camids, clip_clothes_ids = [], torch.tensor([]), torch.tensor([]), torch.tensor([])
+    for batch_idx, (vids, batch_pids, batch_camids, batch_clothes_ids) in enumerate(dataloader):
+        if (batch_idx + 1) % 2==0:
+            logger.info("{}/{}".format(batch_idx+1, len(dataloader)))
+        vids = vids.cuda()
+        batch_features = model(vids)
+        clip_features.append(batch_features.cpu())
+        clip_pids = torch.cat((clip_pids, batch_pids.cpu()), dim=0)
+        clip_camids = torch.cat((clip_camids, batch_camids.cpu()), dim=0)
+        clip_clothes_ids = torch.cat((clip_clothes_ids, batch_clothes_ids.cpu()), dim=0)
+    clip_features = torch.cat(clip_features, 0).cpu()
+    return clip_features, clip_pids, clip_camids, clip_clothes_ids
+
+    # # # Gather samples from different GPUs
+    # # clip_features, clip_pids, clip_camids, clip_clothes_ids = \
+    # #     concat_all_gather([clip_features, clip_pids, clip_camids, clip_clothes_ids], data_length)
+
+    # # Use the averaged feature of all clips split from a video as the representation of this original full-length video
+    # features = torch.zeros(len(vid2clip_index), clip_features.size(1)).cuda()
+    # clip_features = clip_features.cuda()
+    # pids = torch.zeros(len(vid2clip_index))
+    # camids = torch.zeros(len(vid2clip_index))
+    # clothes_ids = torch.zeros(len(vid2clip_index))
+    # for i, idx in enumerate(vid2clip_index):
+    #     features[i] = clip_features[idx[0] : idx[1], :].mean(0)
+    #     features[i] = F.normalize(features[i], p=2, dim=0)
+    #     pids[i] = clip_pids[idx[0]]
+    #     camids[i] = clip_camids[idx[0]]
+    #     clothes_ids[i] = clip_clothes_ids[idx[0]]
+    # features = features.cpu()
+
+    # return features, pids, camids, clothes_ids
 
 def test(config, model, queryloader, galleryloader, dataset):
     logger = logging.getLogger('reid.test')
     since = time.time()
     model.eval()
-    local_rank = dist.get_rank()
+    local_rank = 0
 
     # Extract features 
     if config.DATA.DATASET in VID_DATASET:
-        qf, q_pids, q_camids, q_clothes_ids = extract_vid_feature(logger, model, queryloader, 
-                                                                  dataset.query_vid2clip_index,
-                                                                  len(dataset.recombined_query))
-        gf, g_pids, g_camids, g_clothes_ids = extract_vid_feature(logger, model, galleryloader, 
-                                                                  dataset.gallery_vid2clip_index,
-                                                                  len(dataset.recombined_gallery))
+        qf, q_pids, q_camids, q_clothes_ids = extract_vid_feature_updated(logger, model, queryloader,
+                                                                #   dataset.query_vid2clip_index,
+                                                                  len(dataset.query))
+        gf, g_pids, g_camids, g_clothes_ids = extract_vid_feature_updated(logger, model, galleryloader,
+                                                                #   dataset.gallery_vid2clip_index,
+                                                                  len(dataset.gallery))
     else:
         qf, q_pids, q_camids, q_clothes_ids = extract_img_feature(model, queryloader)
         gf, g_pids, g_camids, g_clothes_ids = extract_img_feature(model, galleryloader)

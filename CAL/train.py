@@ -4,10 +4,27 @@ import logging
 import torch
 from apex import amp
 from tools.utils import AverageMeter
+from tools.utils import save_checkpoint, set_seed, get_logger
+import os.path as osp
 
 
 def train_cal(config, epoch, model, classifier, clothes_classifier, criterion_cla, criterion_pair, 
     criterion_clothes, criterion_adv, optimizer, optimizer_cc, trainloader, pid2clothes):
+
+    model_state_dict = model.state_dict()
+    classifier_state_dict = classifier.state_dict()
+    clothes_classifier_state_dict = clothes_classifier.state_dict()
+    rank1 = 0
+    is_best = False
+    if (epoch) % 5 == 0:
+        save_checkpoint({
+                'model_state_dict': model_state_dict,
+                'classifier_state_dict': classifier_state_dict,
+                'clothes_classifier_state_dict': clothes_classifier_state_dict,
+                'rank1': rank1,
+                'epoch': epoch,
+            }, is_best, osp.join(config.OUTPUT, 'checkpoint_ep' + str(epoch+1) + '.pth.tar'))
+
     logger = logging.getLogger('reid.train')
     batch_cla_loss = AverageMeter()
     batch_pair_loss = AverageMeter()
@@ -25,7 +42,7 @@ def train_cal(config, epoch, model, classifier, clothes_classifier, criterion_cl
     end = time.time()
     for batch_idx, (imgs, pids, camids, clothes_ids) in enumerate(trainloader):
         # Get all positive clothes classes (belonging to the same identity) for each sample
-        pos_mask = pid2clothes[pids]
+        pos_mask = pid2clothes[pids.cpu()]
         imgs, pids, clothes_ids, pos_mask = imgs.cuda(), pids.cuda(), clothes_ids.cuda(), pos_mask.float().cuda()
         # Measure data loading time
         data_time.update(time.time() - end)
@@ -94,6 +111,21 @@ def train_cal(config, epoch, model, classifier, clothes_classifier, criterion_cl
 
 def train_cal_with_memory(config, epoch, model, classifier, criterion_cla, criterion_pair, 
     criterion_adv, optimizer, trainloader, pid2clothes):
+
+    model_state_dict = model.module.state_dict()
+    classifier_state_dict = classifier.module.state_dict()
+    clothes_classifier_state_dict = criterion_adv.state_dict()
+    rank1 = 0
+
+    if (epoch) % 5 == 0:
+        save_checkpoint({
+                'model_state_dict': model_state_dict,
+                'classifier_state_dict': classifier_state_dict,
+                'clothes_classifier_state_dict': clothes_classifier_state_dict,
+                'rank1': rank1,
+                'epoch': epoch,
+            }, is_best, osp.join(config.OUTPUT, 'checkpoint_ep' + str(epoch+1) + '.pth.tar'))
+
     logger = logging.getLogger('reid.train')
     batch_cla_loss = AverageMeter()
     batch_pair_loss = AverageMeter()

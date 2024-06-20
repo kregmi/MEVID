@@ -4,11 +4,13 @@ import data.temporal_transforms as TT
 from torch.utils.data import DataLoader
 from data.dataloader import DataLoaderX
 from data.dataset_loader import ImageDataset, VideoDataset
-from data.samplers import DistributedRandomIdentitySampler, DistributedInferenceSampler
+from data.samplers import DistributedRandomIdentitySampler, DistributedInferenceSampler, RandomIdentitySampler
 from data.datasets.ltcc import LTCC
 from data.datasets.prcc import PRCC
 from data.datasets.last import LaST
 from data.datasets.ccvid import CCVID
+from data.datasets.BRIAR import BRIAR
+from data.datasets.BRIAR_test import BRIAR_test
 from data.datasets.deepchange import DeepChange
 from data.datasets.vcclothes import VCClothes, VCClothesSameClothes, VCClothesClothesChanging
 
@@ -21,10 +23,12 @@ __factory = {
     'vcclothes_cc': VCClothesClothesChanging,
     'last': LaST,
     'ccvid': CCVID,
+    'briar': BRIAR,
+    'briar_test': BRIAR_test,
     'deepchange': DeepChange,
 }
 
-VID_DATASET = ['ccvid']
+VID_DATASET = ['ccvid', 'briar', 'briar_test']
 
 
 def get_names():
@@ -98,7 +102,7 @@ def build_dataloader(config):
         spatial_transform_train, spatial_transform_test, temporal_transform_train, temporal_transform_test = build_vid_transforms(config)
 
         if config.DATA.DENSE_SAMPLING:
-            train_sampler = DistributedRandomIdentitySampler(dataset.train_dense, 
+            train_sampler = RandomIdentitySampler(dataset.train_dense, 
                                                              num_instances=config.DATA.NUM_INSTANCES, 
                                                              seed=config.SEED)
             # split each original training video into a series of short videos and sample one clip for each short video during training
@@ -108,9 +112,7 @@ def build_dataloader(config):
                 batch_size=config.DATA.TRAIN_BATCH, num_workers=config.DATA.NUM_WORKERS,
                 pin_memory=True, drop_last=True)
         else:
-            train_sampler = DistributedRandomIdentitySampler(dataset.train, 
-                                                             num_instances=config.DATA.NUM_INSTANCES, 
-                                                             seed=config.SEED)
+            train_sampler = RandomIdentitySampler(dataset.train, num_instances=config.DATA.NUM_INSTANCES)
             # sample one clip for each original training video during training
             trainloader = DataLoaderX(
                 dataset=VideoDataset(dataset.train, spatial_transform_train, temporal_transform_train),
@@ -120,13 +122,17 @@ def build_dataloader(config):
         
         # split each original test video into a series of clips and use the averaged feature of all clips as its representation
         queryloader = DataLoaderX(
-            dataset=VideoDataset(dataset.recombined_query, spatial_transform_test, temporal_transform_test),
-            sampler=DistributedInferenceSampler(dataset.recombined_query),
+            # dataset=VideoDataset(dataset.recombined_query, spatial_transform_test, temporal_transform_test),
+            dataset=VideoDataset(dataset.query, spatial_transform_test, temporal_transform_test),
+            # sampler=DistributedInferenceSampler(dataset.recombined_query),
+            sampler=DistributedInferenceSampler(dataset.query),
             batch_size=config.DATA.TEST_BATCH, num_workers=config.DATA.NUM_WORKERS,
             pin_memory=True, drop_last=False, shuffle=False)
         galleryloader = DataLoaderX(
-            dataset=VideoDataset(dataset.recombined_gallery, spatial_transform_test, temporal_transform_test),
-            sampler=DistributedInferenceSampler(dataset.recombined_gallery),
+            dataset=VideoDataset(dataset.gallery, spatial_transform_test, temporal_transform_test),
+            # dataset=VideoDataset(dataset.recombined_gallery, spatial_transform_test, temporal_transform_test),
+            # sampler=DistributedInferenceSampler(dataset.recombined_gallery),
+            sampler=DistributedInferenceSampler(dataset.gallery),
             batch_size=config.DATA.TEST_BATCH, num_workers=config.DATA.NUM_WORKERS,
             pin_memory=True, drop_last=False, shuffle=False)
 

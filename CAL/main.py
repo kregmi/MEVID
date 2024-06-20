@@ -22,10 +22,64 @@ from losses import build_losses
 from tools.utils import save_checkpoint, set_seed, get_logger
 from train import train_cal, train_cal_with_memory
 from test import test, test_prcc
+from data.datasets.make_dataloader_clipreid import make_dataloader
 
 from tools.eval_metrics import evaluate, evaluate_with_clothes, evaluate_with_locations, evaluate_with_scales, evaluate_fine_clothes, evaluate_fine_locations, evaluate_fine_scales, compute_data
+import logging
+import os
+import time
+import torch
+import torch.nn as nn
+import numpy as np
+from utils.meter import AverageMeter
+from utils.metrics import R1_mAP_eval
+from torch.cuda import amp
+from torch.nn import functional as F
 
-VID_DATASET = ['ccvid']
+VID_DATASET = ['ccvid', 'briar', 'briar_test']
+
+
+def do_inference(cfg,
+                 model,
+                 val_loader,
+                 num_query):
+    device = "cuda"
+    logger = logging.getLogger("transreid.test")
+    logger.info("Enter inferencing")
+
+    evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
+
+    evaluator.reset()
+
+    if device:
+        model.to(device)
+
+    model.eval()
+    img_path_list = []
+
+    for n_iter, (img, pid, camid, camids, target_view, imgpath) in enumerate(val_loader):
+        with torch.no_grad():
+            img = img.permute(0,2,1,3,4)
+            img = img.to(device)
+            feat = model(img)
+            evaluator.update((feat, pid, camid))
+            img_path_list.extend(imgpath)
+
+    cmc, mAP, distmat, pids, camids, q_pids, g_pids = evaluator.compute()
+    logger.info("Validation Results ")
+    print("mAP : ", mAP)
+    print("cmcs 1, 5, 10, 20 : ")
+    for r in [1, 5, 10, 20]:
+        print(cmc[r - 1])
+    logger.info("mAP: {:.1%}".format(mAP))
+    for r in [1, 5, 10, 20]:
+        logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
+    if cfg.DATASETS.NAMES == 'BRIAR_test':
+        gallery_id = cfg.TEST.GALLERY_ID
+        save_filename = f'{cfg.EVAL_DIR}/eval_cal%d.npz'%gallery_id
+        os.makedirs(os.path.dirname(save_filename), exist_ok=True)
+        np.savez(save_filename, dist=distmat, pids=pids, camids=camids,q_pids=q_pids, g_pids=g_pids)
+    return cmc[0], cmc[4]
 
 
 def parse_option():
@@ -56,6 +110,7 @@ def main(config):
     if config.DATA.DATASET == 'prcc':
         trainloader, queryloader_same, queryloader_diff, galleryloader, dataset, train_sampler = build_dataloader(config)
     else:
+        train_loader, train_loader_normal, val_loader, num_query, num_classes, camera_num, view_num = make_dataloader(config)
         trainloader, queryloader, galleryloader, dataset, train_sampler = build_dataloader(config)
     # Define a matrix pid2clothes with shape (num_pids, num_clothes). 
     # pid2clothes[i, j] = 1 when j-th clothes belongs to i-th identity. Otherwise, pid2clothes[i, j] = 0.
@@ -93,14 +148,8 @@ def main(config):
         logger.info("Loading checkpoint from '{}'".format(config.MODEL.RESUME))
         checkpoint = torch.load(config.MODEL.RESUME)
         model.load_state_dict(checkpoint['model_state_dict'])
-        classifier.load_state_dict(checkpoint['classifier_state_dict'])
-        if config.LOSS.CAL == 'calwithmemory':
-            criterion_adv.load_state_dict(checkpoint['clothes_classifier_state_dict'])
-        else:
-            clothes_classifier.load_state_dict(checkpoint['clothes_classifier_state_dict'])
-        start_epoch = checkpoint['epoch']
 
-    local_rank = dist.get_rank()
+    local_rank = 0
     model = model.cuda(local_rank)
     classifier = classifier.cuda(local_rank)
     if config.LOSS.CAL == 'calwithmemory':
@@ -114,10 +163,6 @@ def main(config):
         if config.LOSS.CAL != 'calwithmemory':
             clothes_classifier, optimizer_cc = amp.initialize(clothes_classifier, optimizer_cc, opt_level="O1")
 
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
-    classifier = nn.parallel.DistributedDataParallel(classifier, device_ids=[local_rank], output_device=local_rank)
-    if config.LOSS.CAL != 'calwithmemory':
-        clothes_classifier = nn.parallel.DistributedDataParallel(clothes_classifier, device_ids=[local_rank], output_device=local_rank)
 
     if config.EVAL_MODE:
         logger.info("Evaluate only")
@@ -125,16 +170,18 @@ def main(config):
             if config.DATA.DATASET == 'prcc':
                 test_prcc(model, queryloader_same, queryloader_diff, galleryloader, dataset)
             else:
-                test(config, model, queryloader, galleryloader, dataset)
+                do_inference(config,
+                 model,
+                 val_loader,
+                 num_query
+                 )
         return
-    test(config, model, queryloader, galleryloader, dataset)
     start_time = time.time()
     train_time = 0
     best_rank1 = -np.inf
     best_epoch = 0
     logger.info("==> Start training")
     for epoch in range(start_epoch, config.TRAIN.MAX_EPOCH):
-        train_sampler.set_epoch(epoch)
         start_train_time = time.time()
         if config.LOSS.CAL == 'calwithmemory':
             train_cal_with_memory(config, epoch, model, classifier, criterion_cla, criterion_pair, 
@@ -164,14 +211,6 @@ def main(config):
                 clothes_classifier_state_dict = criterion_adv.state_dict()
             else:
                 clothes_classifier_state_dict = clothes_classifier.module.state_dict()
-            if local_rank == 0:
-                save_checkpoint({
-                    'model_state_dict': model_state_dict,
-                    'classifier_state_dict': classifier_state_dict,
-                    'clothes_classifier_state_dict': clothes_classifier_state_dict,
-                    'rank1': rank1,
-                    'epoch': epoch,
-                }, is_best, osp.join(config.OUTPUT, 'checkpoint_ep' + str(epoch+1) + '.pth.tar'))
         scheduler.step()
 
     logger.info("==> Best Rank-1 {:.1%}, achieved at epoch {}".format(best_rank1, best_epoch))
@@ -206,9 +245,9 @@ if __name__ == '__main__':
     # Set GPU
     os.environ['CUDA_VISIBLE_DEVICES'] = config.GPU
     # Init dist
-    dist.init_process_group(backend="nccl", init_method='env://')
-    local_rank = dist.get_rank()
-    #local_rank = 0
+    # dist.init_process_group(backend="nccl", init_method='env://')
+    # local_rank = dist.get_rank()
+    local_rank = 0
     # Set random seed
     set_seed(config.SEED + local_rank)
     # get logger

@@ -95,13 +95,13 @@ class BackgroundGenerator(threading.Thread):
 class DataLoaderX(DataLoader):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        local_rank = dist.get_rank()
+        local_rank = 0
         self.stream = torch.cuda.Stream(local_rank)  # create a new cuda stream in each process
         self.local_rank = local_rank
 
     def __iter__(self):
         self.iter = super().__iter__()
-        self.iter = BackgroundGenerator(self.iter, self.local_rank)
+        # self.iter = BackgroundGenerator(self.iter, self.local_rank)
         self.preload()
         return self
 
@@ -125,17 +125,17 @@ class DataLoaderX(DataLoader):
         self.batch = next(self.iter, None)
         if self.batch is None:
             return None
-        with torch.cuda.stream(self.stream):
-            # if isinstance(self.batch[0], torch.Tensor):
-            #     self.batch[0] = self.batch[0].to(device=self.local_rank, non_blocking=True)
-            for k, v in enumerate(self.batch):
-                if isinstance(self.batch[k], torch.Tensor):
-                    self.batch[k] = self.batch[k].to(device=self.local_rank, non_blocking=True)
+        # with torch.cuda.stream(self.stream):
+        #     # if isinstance(self.batch[0], torch.Tensor):
+        #     #     self.batch[0] = self.batch[0].to(device=self.local_rank, non_blocking=True)
+        #     for k, v in enumerate(self.batch):
+        #         if isinstance(self.batch[k], torch.Tensor):
+        #             self.batch[k] = self.batch[k].to(device=self.local_rank, non_blocking=True)
 
     def __next__(self):
-        torch.cuda.current_stream().wait_stream(
-            self.stream
-        )  # wait tensor to put on GPU
+        # torch.cuda.current_stream().wait_stream(
+        #     self.stream
+        # )  # wait tensor to put on GPU
         batch = self.batch
         if batch is None:
             raise StopIteration
